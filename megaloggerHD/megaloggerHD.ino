@@ -101,7 +101,7 @@ void showPIDData(byte pid, int value)
     case PID_RPM:
         lcd.setFontSize(FONT_SIZE_XLARGE);
         lcd.setCursor(14, 8);
-        if (value >= 10000) break;
+        if (value >= 11000) break;
         setColorByValue(value, 2500, 3500, 5000);
         lcd.printInt(value, 6);
         break;
@@ -175,7 +175,7 @@ void fadeInScreen()
 {
     for (int n = 1; n <= 255; n++) {
         lcd.setBackLight(n);
-        delay(6);
+        delay(3);
     }
 }
 
@@ -667,7 +667,7 @@ void setup()
     lcd.begin();
     lcd.setFontSize(FONT_SIZE_MEDIUM);
     lcd.setColor(0xFFE0);
-    lcd.println("Lars y Diana HD - OBD-II/GPS/MEMS");
+    lcd.println("D&L HD - OBD-II/GPS/MEMS");
     lcd.println();
     lcd.setColor(RGB16_WHITE);
 
