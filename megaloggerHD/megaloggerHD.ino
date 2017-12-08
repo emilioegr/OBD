@@ -10,7 +10,6 @@
 #include <Wire.h>
 #include <OBD.h>
 #include <MultiLCD.h>
-#include <TinyGPS.h>
 #include "config.h"
 #if ENABLE_DATA_LOG
 #include <SD.h>
@@ -22,16 +21,8 @@
 // logger states
 #define STATE_SD_READY 0x1
 #define STATE_OBD_READY 0x2
-#define STATE_GPS_CONNECTED 0x4
-#define STATE_GPS_READY 0x8
 #define STATE_MEMS_READY 0x10
 #define STATE_GUI_ON 0x20
-
-#if USE_GPS
-// GPS logging can only be enabled when there is additional hardware serial UART
-#define GPSUART Serial2
-TinyGPS gps;
-#endif
 
 
 static uint8_t lastFileSize = 0;
@@ -41,15 +32,10 @@ static uint32_t startTime = 0;
 static uint16_t lastSpeed = 0;
 static uint32_t lastSpeedTime = 0;
 static uint32_t gpsDate = 0;
-#if USE_GPS
-static uint32_t lastGPSDataTime = 0;
-static int gpsSpeed = -1;
-#endif
 
 byte state = 0;
 
 void processMEMS();
-void processGPS();
 
 CDataLogger logger;
 
@@ -66,13 +52,6 @@ public:
           delay(10);
           return;
         }
-
-#if USE_GPS
-        uint32_t t = millis();
-        while (GPSUART.available() && millis() - t < MAX_GPS_PROCESS_TIME) {
-            processGPS();
-        }
-#endif
     }
 };
 
@@ -112,22 +91,6 @@ void showPIDData(byte pid, int value)
             setColorByValue(value, 60, 100, 160);
             lcd.printInt(value, 3);
 
-#if USE_GPS
-            if (gpsSpeed != -1) {
-                lcd.setFontSize(FONT_SIZE_SMALL);
-                lcd.setCursor(110, 3);
-                lcd.setColor(RGB16_YELLOW);
-                int diff = gpsSpeed - value;
-                if (diff >= 0) {
-                    lcd.write('+');
-                    lcd.printInt(diff);
-                } else {
-                    lcd.write('-');
-                    lcd.printInt(-diff);
-                }
-                lcd.write(' ');
-            }
-#endif
         }
         break;
     case PID_ENGINE_LOAD:
@@ -320,89 +283,6 @@ bool checkSD()
 
     state |= STATE_SD_READY;
     return true;
-}
-#endif
-
-#if USE_GPS
-void processGPS()
-{
-    // process GPS data
-    char c = GPSUART.read();
-    if (!gps.encode(c))
-        return;
-
-    // parsed GPS data is ready
-    uint32_t time;
-    uint32_t date;
-
-    logger.dataTime = millis();
-
-    gps.get_datetime(&date, &time, 0);
-    if (date != gpsDate) {
-        // log date only if it's changed and valid
-        int year = date % 100;
-        if (date < 1000000 && date >= 10000 && year >= 15 && (gpsDate == 0 || year - (gpsDate % 100) <= 1)) {
-          logger.logData(PID_GPS_DATE, (int32_t)date);
-          gpsDate = date;
-        }
-    }
-    logger.logData(PID_GPS_TIME, (int32_t)time);
-
-    int32_t lat, lng;
-    gps.get_position(&lat, &lng, 0);
-
-    byte sat = gps.satellites();
-
-    // show GPS data interval
-    lcd.setFontSize(FONT_SIZE_MEDIUM);
-    if (lastGPSDataTime) {
-        lcd.setCursor(380, 31);
-        lcd.printInt((uint16_t)logger.dataTime - lastGPSDataTime);
-        lcd.print("ms");
-        lcd.printSpace(2);
-    }
-
-    // keep current data time as last GPS time
-    lastGPSDataTime = logger.dataTime;
-
-    // display UTC date/time
-    lcd.setFlags(FLAG_PAD_ZERO);
-    lcd.setCursor(216, 24);
-    lcd.printLong(time, 8);
-
-    // display latitude
-    lcd.setCursor(216, 27);
-    lcd.print((float)lat / 100000, 5);
-    // display longitude
-    lcd.setCursor(216, 30);
-    lcd.print((float)lng / 100000, 5);
-    // log latitude/longitude
-    logger.logData(PID_GPS_LATITUDE, lat);
-    logger.logData(PID_GPS_LONGITUDE, lng);
-
-    // display altitude
-    int32_t alt = gps.altitude();
-    lcd.setFlags(0);
-    if (alt > -1000000 && alt < 1000000) {
-        lcd.setCursor(216, 33);
-        lcd.print(alt / 100);
-        lcd.print("m ");
-    }
-    // log altitude
-    logger.logData(PID_GPS_ALTITUDE, (int)(alt / 100));
-
-    // display number of satellites
-    if (sat < 100) {
-        lcd.setCursor(216, 36);
-        lcd.printInt(sat);
-        lcd.write(' ');
-    }
-
-    // only log these data when satellite status is good
-    if (sat >= 3) {
-        gpsSpeed = gps.speed() * 1852 / 100000;
-        logger.logData(PID_GPS_SPEED, gpsSpeed);
-    }
 }
 #endif
 
@@ -600,19 +480,6 @@ void showStates()
     lcd.print("MEMS ");
     lcd.setColor((state & STATE_MEMS_READY) ? RGB16_GREEN : RGB16_RED);
     lcd.draw((state & STATE_MEMS_READY) ? tick : cross, 16, 16);
-
-#if USE_GPS
-    lcd.setColor(RGB16_WHITE);
-    lcd.setCursor(60, 10);
-    lcd.print(" GPS ");
-    if (state & STATE_GPS_CONNECTED) {
-        lcd.setColor(RGB16_GREEN);
-        lcd.draw(tick, 16, 16);
-    } else {
-        lcd.setColor(RGB16_RED);
-        lcd.draw(cross, 16, 16);
-    }
-#endif
     lcd.setColor(RGB16_WHITE);
 }
 
@@ -658,16 +525,12 @@ void testOut()
 void setup()
 {
   Serial.begin(115200);
-#if USE_GPS
-    GPSUART.begin(GPS_BAUDRATE);
-    lastGPSDataTime = 0;
-#endif
     logger.initSender();
 
     lcd.begin();
     lcd.setFontSize(FONT_SIZE_MEDIUM);
     lcd.setColor(0xFFE0);
-    lcd.println("D&L HD - OBD-II/GPS/MEMS");
+    lcd.println("D&L HD - OBD-II/MEMS");
     lcd.println();
     lcd.setColor(RGB16_WHITE);
 
@@ -708,18 +571,6 @@ void setup()
       state |= STATE_MEMS_READY;
 
     showStates();
-
-#if USE_GPS
-    unsigned long t = millis();
-    while (GPSUART.available()) GPSUART.read();
-    do {
-        if (GPSUART.available() && GPSUART.read() == '\r') {
-            state |= STATE_GPS_CONNECTED;
-            break;
-        }
-    } while (millis() - t <= 2000);
-    showStates();
-#endif
 
     // this will send a bunch of commands and display response
     testOut();
@@ -817,17 +668,8 @@ void loop()
         lastRefreshTime = logger.dataTime;
     }
 
-    if (obd.errors >= 3) {
+    if (obd.errors >= 7) {
         reconnect();
     }
 
-#if USE_GPS
-    if (millis() - lastGPSDataTime > GPS_DATA_TIMEOUT || gps.satellites() < 3) {
-        // GPS not ready
-        state &= ~STATE_GPS_READY;
-    } else {
-        // GPS ready
-        state |= STATE_GPS_READY;
-    }
-#endif
 }
